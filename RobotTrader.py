@@ -14,8 +14,8 @@ TraunchSize = 1000	#Make this enough to buy at least 10 shares so keep price in 
 InitialFunds = TraunchSize * Traunches
 BestActionDataFolder = 'data/bestactions/'
 WindowSize = 60
-TickerList=['BAC','XOM','CVX','JNJ']
-#TickerList=['BAC','JPM','XOM','CVX','JNJ','UNH','HD','PFE','MRK']
+tickerList=['BAC','XOM','CVX','JNJ']
+#tickerList=['BAC','JPM','XOM','CVX','JNJ','UNH','HD','PFE','MRK']
 
 #---------------------------------------- Global Helpers -------------------------------------------------
 def RecordPerformance(ModelName, StartDate, TestStartDate, EndDate, StartValue, TestStartValue, EndValue, TradeCount):
