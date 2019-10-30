@@ -9,13 +9,11 @@ from random import randint
 OrderDuration = 3 		#for non-market orders, how many days until canceled
 TradeSequenceLength = 4	#number of sequential actions evaluated, evaluations get exponentially more complex so over 7 is going to get real slow
 ForcastDuration = 20 	#After executing sequence, how many days to project before evaluating the effect
-Traunches = 30
-TraunchSize = 1000	#Make this enough to buy at least 10 shares so keep price in mind
-InitialFunds = TraunchSize * Traunches
+Tranches = 30
+TranchSize = 1000	#Make this enough to buy at least 10 shares so keep price in mind
+InitialFunds = TranchSize * Tranches
 BestActionDataFolder = 'data/bestactions/'
 WindowSize = 60
-tickerList=['BAC','XOM','CVX','JNJ']
-#tickerList=['BAC','JPM','XOM','CVX','JNJ','UNH','HD','PFE','MRK']
 
 #---------------------------------------- Global Helpers -------------------------------------------------
 def RecordPerformance(ModelName, StartDate, TestStartDate, EndDate, StartValue, TestStartValue, EndValue, TradeCount):
@@ -33,7 +31,7 @@ def RecordPerformance(ModelName, StartDate, TestStartDate, EndDate, StartValue, 
 	except:
 		print('Unable to write performance report to ' + filename)
 
-def ModelName(ticker:str): return 'RT_' + ticker + '_seqlen' + str(TradeSequenceLength) + '_forcast' + str(ForcastDuration) + '_FundSets' + str(Traunches)
+def ModelName(ticker:str): return 'RT_' + ticker + '_seqlen' + str(TradeSequenceLength) + '_forcast' + str(ForcastDuration) + '_FundSets' + str(Tranches)
 
 def MakeState(mode:int, p:PriceSnapshot, available:float, buys:float=0, sells:float=0, long:float=0):
 	#returns an array of numbers to describe current market state of given day
@@ -186,7 +184,7 @@ def CalculateBestActions(ticker:str, startDate:str, durationInYears:int, plotRes
 	tsPool = Pool(ThreadCount)
 	pooledResults = []
 	modelName = ModelName(ticker)+ '_BestAction'
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=InitialFunds, traunchSize=TraunchSize)
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=InitialFunds, traunchSize=TranchSize)
 	fm1 = ForcastModel(tm, ForcastDuration)
 	fm3 = ForcastModel(tm, ForcastDuration)
 	fm5 = ForcastModel(tm, ForcastDuration)
@@ -212,7 +210,7 @@ def CalculateBestActions(ticker:str, startDate:str, durationInYears:int, plotRes
 			print(' Forcasting ...') #Test for  every permutation of Buy/Sell/Hold/Cancel, get best result, then test more aggressive actions
 			if a == 0:
 				pooledResults = tsPool.starmap(BestSequence, [(fm3, tradeSequences3, True),(fm5, tradeSequences5, True)])
-			elif a == Traunches:
+			elif a == Tranches:
 				pooledResults = tsPool.starmap(BestSequence, [(fm1, tradeSequences1, True),(fm3, tradeSequences3, True)])
 			else:
 				pooledResults = tsPool.starmap(BestSequence, [(fm1, tradeSequences1, True),(fm3, tradeSequences3, True),(fm5, tradeSequences5, True)])
@@ -329,7 +327,7 @@ def TraderTest(ticker: str, startDate:datetime, durationInYears:int, trainStartD
 	endDate = startDate + timedelta(days=365*durationInYears)
 	if actions.index.min() > startDate: startDate = actions.index.min()
 	if actions.index.max() < endDate: endDate = actions.index.max()
-	tm = TradingModel(modelName=modelName + '_Test', startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=InitialFunds, traunchSize=TraunchSize, verbose=verbose)
+	tm = TradingModel(modelName=modelName + '_Test', startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=InitialFunds, traunchSize=TranchSize, verbose=verbose)
 	if not tm.modelReady:
 		print('Unable to initialize price history for model for ' + str(startDate))
 		return 0
@@ -357,7 +355,7 @@ def TraderRun(ticker: str, startDate:datetime, durationInYears:int, stateType:in
 	modelName = ModelName(ticker) + '_State' + str(stateType)  + '_Run' + startDate[-4:]
 	savedModelName = ModelName(ticker) + '_State' + str(stateType) + '_Train'
 	if useGenericModel: savedModelName = ModelName('Trading') + '_State' + str(stateType) + '_Train'
-	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=InitialFunds, traunchSize=TraunchSize, verbose=True)
+	tm = TradingModel(modelName=modelName, startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=InitialFunds, traunchSize=TranchSize, verbose=True)
 	if calculateBestActions:
 		ThreadCount = 3
 		x = [1,3,5,7]
@@ -409,7 +407,7 @@ def TraderRun(ticker: str, startDate:datetime, durationInYears:int, stateType:in
 					print(' Forcasting best action ...') #Test every permutation of Buy/Sell/Hold/Cancel, get best result, then test more aggressive actions
 					if a == 0:
 						pooledResults = tsPool.starmap(BestSequence, [(fm3, tradeSequences3, False),(fm5, tradeSequences5, False)])
-					elif a==Traunches:
+					elif a==Tranches:
 						pooledResults = tsPool.starmap(BestSequence, [(fm1, tradeSequences1, False),(fm3, tradeSequences3, False)])
 					else:
 						pooledResults = tsPool.starmap(BestSequence, [(fm1, tradeSequences1, False),(fm3, tradeSequences3, False),(fm5, tradeSequences5, False)])
@@ -460,7 +458,7 @@ def TraderRun(ticker: str, startDate:datetime, durationInYears:int, stateType:in
 def TraderRandom(ticker: str, startDate:datetime, testStartDate:datetime, durationInYears:int, plotResults:bool=False, verbose:bool=True):
 	#Pick random actions for each day to see how we do
 	modelName = 'Random_' + (ticker) + '_' + startDate[-4:]
-	tm = TradingModel(modelName, ticker, startDate, durationInYears, InitialFunds, TraunchSize)
+	tm = TradingModel(modelName, ticker, startDate, durationInYears, InitialFunds, TranchSize)
 	if not tm.modelReady:
 		print('Unable to initialize price history for model for ' + str(startDate))
 		return 0
@@ -483,7 +481,7 @@ def TraderRandom(ticker: str, startDate:datetime, testStartDate:datetime, durati
 
 def TraderBuyHold(ticker: str, startDate:datetime, testStartDate:datetime, durationInYears:int, plotResults:bool=False, verbose:bool=False):
 	modelName = 'BuyHold_' + (ticker) + '_' + startDate[-4:]
-	tm = TradingModel(modelName, ticker, startDate, durationInYears, InitialFunds, TraunchSize)
+	tm = TradingModel(modelName, ticker, startDate, durationInYears, InitialFunds, TranchSize)
 	if not tm.modelReady:
 		print('Unable to initialize price history for model for ' + str(startDate))
 		return 0
@@ -491,7 +489,7 @@ def TraderBuyHold(ticker: str, startDate:datetime, testStartDate:datetime, durat
 		i = 0
 		while not tm.ModelCompleted():
 			day = tm.currentDate
-			if i <= Traunches:
+			if i <= Tranches:
 				p = tm.GetPriceSnapshot()	
 				DoAction(tm, p, 2)
 				i +=1 
@@ -531,17 +529,13 @@ def ExtensiveTesting(tickerList:list):
 				TraderRandom(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=5)
 			TraderTrain(ticker='BAC', startDate='1/1/1995', durationInYears=20, stateType=stateType, epochs=350, train_test_split=.99, useGenericModel=True, deleteExistingModel=True)
 			TraderTrain(ticker='XOM', startDate='1/1/1995', durationInYears=20, stateType=stateType, epochs=350, train_test_split=.99, useGenericModel=True, deleteExistingModel=True)
-			TraderRun(ticker=ticker, startDate='1/1/1990', durationInYears=5, stateType=stateType, useGenericModel=True, calculateBestActions=False, saveTraining=False, plotResults=False)
-			TraderBuyHold(ticker=ticker, startDate='1/1/1990', testStartDate='1/1/1990', durationInYears=5)
-			TraderRandom(ticker=ticker, startDate='1/1/1990', testStartDate='1/1/1990', durationInYears=5)
 			for i in range(3):
 				startDate='1/1/' + str(1990 + i*5)	#1990 to 2000
 				TraderRun(ticker=ticker, startDate=startDate, durationInYears=5, stateType=stateType, useGenericModel=True, calculateBestActions=False, saveTraining=False, plotResults=False)
 				TraderBuyHold(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=5)
 				TraderRandom(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=5)
 				
-def SomeTests():
-	tickerList = ['BAC','XOM','CVX','JNJ']
+def SomeTests(tickerList:list):
 	for ticker in tickerList:
 		filePath = BestActionFileName(ticker)
 		if os.path.isfile(filePath):
@@ -550,5 +544,8 @@ def SomeTests():
 
 if __name__ == '__main__':
 	#multiprocessing.freeze_support()
-	ExtensivePreparation(tickerList)
+	tickerList=['JNJ']
+	#TickerList=['BAC','XOM','CVX','JNJ']
+	#TickerList=['BAC','JPM','XOM','CVX','JNJ','UNH','HD','PFE','MRK']
+	#ExtensivePreparation(tickerList)
 	ExtensiveTesting(tickerList)
