@@ -1,26 +1,37 @@
 import datetime, os, itertools, multiprocessing, pandas as pd, numpy as np
-from datetime import timedelta, datetime
+from datetime import datetime
 from os import listdir
 from _classes.PriceTradeAnalyzer import TradingModel, ForcastModel, PricingData, PriceSnapshot
 from _classes.Utility import *
 from multiprocessing import Pool
 from random import randint
 
+#This will do one trade per day, with a goal of picking the most profitable action.  Actions are pooled into sequences, most every permutation is forecast for a period of days to see which is most profitable
+#The model will be trained on the best possible actions forecast and then asked to make its own predictions.  CNN or LSTM models can be used.
 OrderDuration = 3 		#for non-market orders, how many days until canceled
 TradeSequenceLength = 4	#number of sequential actions evaluated, evaluations get exponentially more complex so over 7 is going to get real slow
 ForcastDuration = 20 	#After executing sequence, how many days to project before evaluating the effect
-Tranches = 30
-TranchSize = 1000	#Dollar amount.  Make this enough to buy at least 10 shares of whatever ticker you choose
+Tranches = 30			#Chunks of funds to be used for purchases
+TranchSize = 1000		#Dollar amount.  Make this enough to buy at least 10 shares of whatever ticker you choose
 InitialFunds = TranchSize * Tranches
-BestActionDataFolder = 'data/bestactions/'
-WindowSize = 60 #When using a CCN model this is the input window size
-UseLSTM = False #Can use LSTM or CNN
-if UseLSTM: WindowSize = 1
+BestActionDataFolder = 'data/bestactions/'	#Where the training data will be stored
+WindowSize = 60 			#When using a CCN model this is the input window size
+UseLSTM = False 			#We can use LSTM or CNN
+if UseLSTM: WindowSize = 1	#Historical windows are implicit with LSTM
+train_test_split = .8 		#Split between data to be trained on and data to be evaluated upon.  Global variable so this can also be used to compare against BuyHold dates
 
 #---------------------------------------- Global Helpers -------------------------------------------------
+def TestStartDate(startDate, endDate):
+	startDate = ToDate(startDate)
+	endDate = ToDate(endDate)
+	totalDuration = endDate-startDate
+	daysUntilTest = int(totalDuration.days * train_test_split)
+	r = AddDays(startDate, daysUntilTest) 
+	return r
+
 def RecordPerformance(ModelName, StartDate, TestStartDate, EndDate, StartValue, TestStartValue, EndValue, TradeCount):
-	#Record trade performance to output file, each model run will append to the same files so you can easily compare the results
-	filename = 'data/trademodel/performance.csv'
+	#Record trade performance to output file, each model run will append to the same files so you can easily compare the results, the result of training period and testing period are separately broken out
+	filename = 'data/trademodel/RTPerfomanceComparisons.csv'
 	try:
 		if FileExists(filename):
 			f = open(filename,"a")
@@ -37,9 +48,10 @@ def RecordPerformance(ModelName, StartDate, TestStartDate, EndDate, StartValue, 
 def ModelName(ticker:str): return 'RT_' + ticker + '_seqlen' + str(TradeSequenceLength) + '_forcast' + str(ForcastDuration) + '_FundSets' + str(Tranches)
 
 def MakeState(mode:int, p:PriceSnapshot, available:float, buys:float=0, sells:float=0, long:float=0):
-	#returns an array of numbers to describe current market state of given day, used as model input
+	#returns an array of numbers to describe current market state of given day, used as features for the model input, experiment freely here but I've found simple is better.  This is how the model sees the state of the world.
 	#high, low, open, close, oneDayAverage, twoDayAverage, shortEMA, shortEMASlope, longEMA, longEMASlope, channelHigh, channelLow, oneDayApc, oneDayDeviation, fiveDayDeviation, fifteenDayDeviation
-	#estLow, nextDayTarget, estHigh snapShotDate
+	#estLow, nextDayTarget, estHigh are all available fields
+	#The current state of the portfolio (available funds, open orders, long positions) are also part of the input
 	size = 0
 	r = []
 	try:
@@ -181,6 +193,8 @@ def BetterSequence(fm: ForcastModel, bestForcastResult, bestForcastSequence):
 
 def CalculateBestActions(ticker:str, startDate:str, durationInYears:int, plotResults:bool=False, saveHistoryToFile:bool=False, returndailyValues:bool=False):
 	#Calculate the most profitable trade sequences possible for a given period, results are saved to .csv and used for training
+	#Results are dependent on the ticker, sequence length, forecast duration, and total funds.  Changing any of those requires a new file that will have a different file name.  
+	#Calculations with the same variables on different date periods can be combined together with SweepBestActionFiles to avoid recalculating
 	if not CreateFolder(BestActionDataFolder):
 		print('Unable to create folder: ', BestActionDataFolder)
 		assert(False)
@@ -249,15 +263,15 @@ def CalculateBestActions(ticker:str, startDate:str, durationInYears:int, plotRes
 
 def TraderTrain(ticker:str, startDate:datetime, durationInYears:int, stateType:int=0, epochs:int=300, runTest:bool=True, train_test_split:float=.60, useGenericModel:bool=True, deleteExistingModel:bool=False):
 	from _classes.SeriesPrediction import TradePredictionNN
-	#Train model on previously generated best action sequence .csv file, output predicted single next best actions to csv file.
-	#The training data is for a sequence of best actions, but we are recording the best single action per day and the best single predicted action per day.
-	#A trained model should predict actions for the same sequence as the training sequence
+	#Train model on previously generated best action sequence .csv file, output two values per day, the best action and the model predicted best action, a predictions csv file.
+	#The best actions training data is for a sequence actions, but we are recording the best single action per day and the best single predicted action per day.  A trained model SHOULD predict actions for the same sequence as the training sequence.
+	#The output will include both the training and test data, so noting where that cutoff occurs is significant.  The model has been told the correct answer for the training data, not so with test 
 	prices = PricingData(ticker)
 	prices.LoadHistory()
 	prices.CalculateStats()
 	prices.NormalizePrices()
-	startDate = datetime.strptime(startDate, '%m/%d/%Y')
-	endDate = startDate + timedelta(days=365*durationInYears)
+	startDate = ToDate(startDate)
+	endDate = AddDays(startDate, 365*durationInYears)
 	if prices.historyStartDate > startDate: startDate = prices.historyStartDate
 	if prices.historyEndDate < endDate: endDate = prices.historyEndDate
 	filePath = BestActionFileName(ticker)
@@ -320,17 +334,13 @@ def TraderTrain(ticker:str, startDate:datetime, durationInYears:int, stateType:i
 	modelName = ModelName(ticker) + '_State' + str(stateType) + '_Train'
 	print('Saving predictions to ' + modelName + '_predictions.csv')
 	model.PredictionResultsSave(modelName + '_predictions.csv', True)
-	if runTest: TraderTest(ticker=ticker, startDate=startDate.strftime('%m/%d/%Y'), durationInYears=durationInYears, trainStartDate=model.test_start_date, stateType=stateType, plotResults=False, verbose=False)
+	if runTest: TraderTest(ticker=ticker, startDate=startDate.strftime('%m/%d/%Y'), durationInYears=durationInYears, testStartDate=model.test_start_date, stateType=stateType, plotResults=False, verbose=False)
 
 #------------------------------------ Trading ------------------------------------------------------------------------
-def TraderTest(ticker: str, startDate:datetime, durationInYears:int, trainStartDate:datetime, stateType:int=0, plotResults:bool=False, verbose:bool=False):
-	#Test on the _predictions.csv to see the resulting trades.   Note that the training and test data are both in the file.   Expected results on the training data should be quite extraordinary.
-	modelName = ModelName(ticker) + '_State' + str(stateType) 
-	if True:	
-		filePath = 'data/trademodel/' + modelName + '_Train_predictions.csv'
-		actions = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
-		actions.fillna(value=3, inplace=True)
-	else:
+def TraderTest(ticker: str, startDate:datetime, durationInYears:int, testStartDate:datetime, stateType:int=0, plotResults:bool=False, justEvaluateInputTrainingData:bool=False, verbose:bool=False):
+	#Evaluate the performance of the model using previously generated predictions.csv to specify what action to perform each day.
+	if justEvaluateInputTrainingData: #Run an evaluation of the input training data to see how it performs outside the model, should be a rocket ship
+		modelName = ModelName(ticker) + '_State' + str(stateType) + '_InputDataTest'
 		filePath =  BestActionFileName(ticker)
 		SweepBestActionFiles(ticker)
 		if not FileExists(filePath): 
@@ -338,8 +348,13 @@ def TraderTest(ticker: str, startDate:datetime, durationInYears:int, trainStartD
 			SweepBestActionFiles(ticker)
 		actions = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
 		actions['actionID_Predicted'] = actions['0']
-	startDate = datetime.strptime(startDate, '%m/%d/%Y')
-	endDate = startDate + timedelta(days=365*durationInYears)
+	else:	#Evaluate the perfomance of the model itself
+		modelName = ModelName(ticker) + '_State' + str(stateType) 
+		filePath = 'data/trademodel/' + modelName + '_Train_predictions.csv'
+		actions = pd.read_csv(filePath, index_col=0, parse_dates=True, na_values=['nan'])
+		actions.fillna(value=3, inplace=True)
+	startDate = ToDate(startDate)
+	endDate = AddDays(startDate, days=365*durationInYears)
 	if actions.index.min() > startDate: startDate = actions.index.min()
 	if actions.index.max() < endDate: endDate = actions.index.max()
 	tm = TradingModel(modelName=modelName + '_Test', startingTicker=ticker, startDate=startDate, durationInYears=durationInYears, totalFunds=InitialFunds, tranchSize=TranchSize, verbose=verbose)
@@ -358,13 +373,15 @@ def TraderTest(ticker: str, startDate:datetime, durationInYears:int, trainStartD
 			tm.ProcessDay()			
 		cash, asset = tm.Value()
 		print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
-		tsv = tm.GetValueAt(trainStartDate)
+		tsv = tm.GetValueAt(testStartDate)
 		tradeCount = len(tm.tradeHistory)
-		RecordPerformance(ModelName=modelName, StartDate=startDate, TestStartDate=trainStartDate, EndDate=endDate, StartValue=InitialFunds, TestStartValue=tsv, EndValue=(cash + asset), TradeCount=tradeCount)
+		RecordPerformance(ModelName=modelName, StartDate=startDate, TestStartDate=testStartDate, EndDate=endDate, StartValue=InitialFunds, TestStartValue=tsv, EndValue=(cash + asset), TradeCount=tradeCount)
 		return tm.CloseModel(plotResults=plotResults, saveHistoryToFile=True)	
 		
 def TraderRun(ticker: str, startDate:datetime, durationInYears:int, stateType:int=0, useGenericModel:bool=True, calculateBestActions:bool=False, saveTraining:bool=False, plotResults:bool=False):
-	#Restore model from backup and run predictions
+	#Restore model from backup, run predictions, output the result to performance.csv.  You can use a ticker specific model or generic model trained on multiple tickers
+	#calculateBestActions=True will continue forecast and train the model as it moves forward in time
+	#saveTraining=False specifies that ongoing training will not save changes to the model
 	training_epochs=10
 	from _classes.SeriesPrediction import TradePredictionNN
 	modelName = ModelName(ticker) + '_State' + str(stateType)  + '_Run' + startDate[-4:]
@@ -418,8 +435,8 @@ def TraderRun(ticker: str, startDate:datetime, durationInYears:int, stateType:in
 				inputStates.at[day, stateLables] = state 
 				window.insert(0,state)
 				if len(window) > WindowSize: del window[-1]
-				if calculateBestActions:
-					print(' Forcasting best action ...') #Test every permutation of Buy/Sell/Hold/Cancel, get best result, then test more aggressive actions
+				if calculateBestActions:	#Use this option to train while running
+					print(' Forcasting best action ...') 
 					if a == 0:
 						pooledResults = tsPool.starmap(BestSequence, [(fm3, tradeSequences3, False),(fm5, tradeSequences5, False)])
 					elif a==Tranches:
@@ -445,10 +462,10 @@ def TraderRun(ticker: str, startDate:datetime, durationInYears:int, stateType:in
 				else:
 					print(' No actions while building history window... day ', len(window))
 					actionID = 3
-				p = tm.GetPriceSnapshot()	#Buy on standard prices
+				p = tm.GetPriceSnapshot()
 				DoAction(tm, p, actionID)			
 				tm.ProcessDay()
-				if calculateBestActions and trainCounter > 30: #Time to train
+				if calculateBestActions and trainCounter > 30: #Periodically train on the data we have been getting
 					print('Pausing to update training')
 					targetValues = targetValues.astype({'actionID': int})
 					model.LoadSource(sourceDF=inputStates, window_size=WindowSize)
@@ -457,15 +474,15 @@ def TraderRun(ticker: str, startDate:datetime, durationInYears:int, stateType:in
 					training_epochs = min(training_epochs, int(len(targetValues)/10))
 					model.Train(epochs=training_epochs)
 					training_epochs = 10
-					if saveTraining: model.Save() #Preserve integrity of model training for testing by not saving
+					if saveTraining: model.Save() #To preserve integrity of prior model training don't save
 					trainCounter = 0
 				trainCounter +=1		
 			cash, asset = tm.Value()
 			print('Ending Value: ', cash + asset, '(Cash', cash, ', Asset', asset, ')')
-			trainStartDate = startDate
-			tsv = tm.GetValueAt(trainStartDate)
+			testStartDate = startDate	#Training was done as it came in, so as far as we know all data was test, unless it was done separately
+			tsv = tm.GetValueAt(testStartDate)
 			tradeCount = len(tm.tradeHistory)
-			RecordPerformance(ModelName=modelName, StartDate=startDate, TestStartDate=trainStartDate, EndDate=tm.currentDate, StartValue=InitialFunds, TestStartValue=tsv, EndValue=(cash + asset), TradeCount=tradeCount)
+			RecordPerformance(ModelName=modelName, StartDate=startDate, TestStartDate=testStartDate, EndDate=tm.currentDate, StartValue=InitialFunds, TestStartValue=tsv, EndValue=(cash + asset), TradeCount=tradeCount)
 			filePath = BestActionFileName(ticker, startDate) + '_Run'	#These are only the best actions from current portfolio which may not have been well managed
 			if calculateBestActions: bestActions.to_csv(filePath)
 			return tm.CloseModel(plotResults=plotResults, saveHistoryToFile=True)	
@@ -494,7 +511,7 @@ def TraderRandom(ticker: str, startDate:datetime, testStartDate:datetime, durati
 		RecordPerformance(ModelName=modelName, StartDate=startDate, TestStartDate=testStartDate, EndDate=tm.currentDate, StartValue=InitialFunds, TestStartValue=tsv, EndValue=(cash + asset), TradeCount=tradeCount)
 		return tm.CloseModel(plotResults=plotResults, saveHistoryToFile=True)	
 
-def TraderBuyHold(ticker: str, startDate:datetime, testStartDate:datetime, durationInYears:int, plotResults:bool=False, verbose:bool=False):
+def TraderBuyHold(ticker: str, startDate:str, testStartDate:datetime, durationInYears:int, plotResults:bool=False, verbose:bool=False):
 	#Baseline model for comparison, it is pointless to trade if you can't beat this
 	modelName = 'BuyHold_' + (ticker) + '_' + startDate[-4:]
 	tm = TradingModel(modelName, ticker, startDate, durationInYears, InitialFunds, TranchSize)
@@ -536,28 +553,31 @@ def ExtensiveTesting(tickerList:list):
 	for ticker in tickerList:
 		filePath = BestActionFileName(ticker)
 		if os.path.isfile(filePath):
-			TraderRun(ticker=ticker, startDate='1/1/2010', durationInYears=8, stateType=stateType, useGenericModel=True, calculateBestActions=False, saveTraining=False, plotResults=False)
-			TraderBuyHold(ticker=ticker, startDate='1/1/2010', testStartDate='1/1/2010', durationInYears=8)
-			TraderRandom(ticker=ticker, startDate='1/1/2010', testStartDate='1/1/2010', durationInYears=8)
+			startDate = '1/1/2020'
+			TraderRun(ticker=ticker, startDate=startDate, durationInYears=8, stateType=stateType, useGenericModel=True, calculateBestActions=False, saveTraining=False, plotResults=False)
+			TraderBuyHold(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=8)
+			TraderRandom(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=8)
 			for i in range(2):
 				startDate='1/1/' + str(2005 + i*5)	#2005 to 2015
 				TraderRun(ticker=ticker, startDate=startDate, durationInYears=5, stateType=stateType, useGenericModel=True, calculateBestActions=False, saveTraining=False, plotResults=False)
 				TraderBuyHold(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=5)
 				TraderRandom(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=5)
-			TraderTrain(ticker='BAC', startDate='1/1/1995', durationInYears=20, stateType=stateType, epochs=350, train_test_split=.99, useGenericModel=True, deleteExistingModel=True)
-			TraderTrain(ticker='XOM', startDate='1/1/1995', durationInYears=20, stateType=stateType, epochs=350, train_test_split=.99, useGenericModel=True, deleteExistingModel=True)
 			for i in range(3):
 				startDate='1/1/' + str(1990 + i*5)	#1990 to 2000
 				TraderRun(ticker=ticker, startDate=startDate, durationInYears=5, stateType=stateType, useGenericModel=True, calculateBestActions=False, saveTraining=False, plotResults=False)
 				TraderBuyHold(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=5)
 				TraderRandom(ticker=ticker, startDate=startDate, testStartDate=startDate, durationInYears=5)
 				
-def SomeTests(tickerList:list):
+def BaselineTests(tickerList:list):
 	for ticker in tickerList:
 		filePath = BestActionFileName(ticker)
 		if os.path.isfile(filePath):
-			TraderBuyHold(ticker=ticker, startDate='3/27/1990', testStartDate='8/1/2006', durationInYears=25)
-			TraderRandom(ticker=ticker,  startDate='3/27/1990', testStartDate='8/1/2006', durationInYears=25)
+			durationInYears = 25
+			startDate = '3/27/1990'
+			endDate = AddDays(startDate, durationInYears*365)
+			testStartDate = TestStartDate(startDate, endDate)
+			TraderBuyHold(ticker=ticker, startDate=startDate, testStartDate=testStartDate, durationInYears=durationInYears)
+			TraderRandom(ticker=ticker,  startDate=startDate, testStartDate=testStartDate, durationInYears=durationInYears)
 
 if __name__ == '__main__':
 	multiprocessing.freeze_support()
@@ -565,3 +585,4 @@ if __name__ == '__main__':
 	tickerList=['BAC','XOM','CVX','JNJ']
 	ExtensivePreparation(tickerList)
 	ExtensiveTesting(tickerList)
+	BaselineTests(tickerList)
