@@ -130,6 +130,7 @@ def SweepBestActionFiles(ticker):
 			else:
 				x = x.append(xx)	
 	if x is not None:
+		x.sort_index(inplace=True)	
 		x.to_csv(baFile)
 		print('Best actions swept into ' + baFile)
 				
@@ -296,19 +297,18 @@ def TraderTrain(ticker:str, startDate:datetime, durationInYears:int, stateType:i
 	inputStates = pd.DataFrame(columns=['date'] + stateLables)
 	inputStates.set_index(['date'], inplace=True)
 	dayCounter = 0
-	day = prices.GetDateFromIndex(dayCounter)
+	dateIndex = prices.GetDateFromIndex(dayCounter)
 	print('Populating states...') 
 	a, b, s, l = 0,0,0,0
 	while dayCounter < len(targetValues):	#Populate input state data.  In addition to price, state data can include available shares, pending orders, and long positions.  All part of best actions file.
-		day = prices.GetDateFromIndex(dayCounter)
-		dateIndex = prices.historicalPrices.index.values[dayCounter]	
-		p = prices.GetPriceSnapshot(forDate=day) 
+		dateIndex = prices.GetDateFromIndex(dayCounter)
+		p = prices.GetPriceSnapshot(forDate=dateIndex) 
 		if dateIndex in targetValues.index:	
 			a, b, s, l = targetValues.loc[dateIndex,['Available', 'Buys', 'Sells', 'Long']]
 			state = MakeState(stateType, p, a, b, s, l)
 			inputStates.at[dateIndex, stateLables] = state 
 		else:
-			print(' ', day, ticker, ' No best action data available for this date')
+			print(' ', str(dateIndex)[:10], ticker, ' No best action data available for this date')
 			targetValues.loc[dateIndex] = np.nan	#Insert an empty row to make the indexes match if necessary, will fill later
 		dayCounter +=1
 	targetValues = targetValues[['actionID']] #Use first action of sequence
@@ -581,8 +581,8 @@ def BaselineTests(tickerList:list):
 
 if __name__ == '__main__':
 	multiprocessing.freeze_support()
-	#tickerList=['BAC']
-	tickerList=['BAC','XOM','CVX','JNJ']
+	#tickerList=['BAC','XOM','JNJ']
+	tickerList=['JNJ']
 	ExtensivePreparation(tickerList)
 	ExtensiveTesting(tickerList)
 	BaselineTests(tickerList)
